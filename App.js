@@ -20,6 +20,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const { width } = Dimensions.get('window');
 
 export default function App() {
+  const [isLoading, setIsLoading] = useState(true);
   const [mode, setMode] = useState('generate'); // 'generate' or 'test'
   const [password, setPassword] = useState('');
   const [testPassword, setTestPassword] = useState('');
@@ -39,6 +40,9 @@ export default function App() {
   const rotationAnim = useRef(new Animated.Value(0)).current;
   const strengthBarWidth = useRef(new Animated.Value(0)).current;
   const copiedScale = useRef(new Animated.Value(0)).current;
+  const loadingOpacity = useRef(new Animated.Value(0)).current;
+  const loadingScale = useRef(new Animated.Value(0.3)).current;
+  const logoRotation = useRef(new Animated.Value(0)).current;
 
   // Load dark mode preference
   useEffect(() => {
@@ -292,10 +296,59 @@ export default function App() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Loading screen animation and timer
+  useEffect(() => {
+    // Fade in and scale up loading screen
+    Animated.parallel([
+      Animated.timing(loadingOpacity, {
+        toValue: 1,
+        duration: 500,
+        useNativeDriver: true,
+      }),
+      Animated.spring(loadingScale, {
+        toValue: 1,
+        tension: 50,
+        friction: 7,
+        useNativeDriver: true,
+      }),
+    ]).start();
+
+    // Rotate logo continuously
+    Animated.loop(
+      Animated.timing(logoRotation, {
+        toValue: 1,
+        duration: 3000,
+        useNativeDriver: true,
+      })
+    ).start();
+
+    // Hide loading screen after 5 seconds
+    const timer = setTimeout(() => {
+      Animated.parallel([
+        Animated.timing(loadingOpacity, {
+          toValue: 0,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+        Animated.timing(loadingScale, {
+          toValue: 0.8,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
+        setIsLoading(false);
+      });
+    }, 5000);
+
+    return () => clearTimeout(timer);
+  }, []);
+
   // Generate initial password
   useEffect(() => {
-    generatePassword();
-  }, []);
+    if (!isLoading) {
+      generatePassword();
+    }
+  }, [isLoading]);
 
   // Test password when user types
   useEffect(() => {
@@ -331,6 +384,57 @@ export default function App() {
     inputRange: [0, 1],
     outputRange: ['0deg', '360deg'],
   });
+
+  const logoSpin = logoRotation.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
+  // Loading Screen
+  if (isLoading) {
+    return (
+      <View style={[styles.loadingContainer, { backgroundColor: darkMode ? '#0a0a0a' : '#f5f5f7' }]}>
+        <StatusBar style={darkMode ? 'light' : 'dark'} />
+        <LinearGradient
+          colors={['#6366f1', '#8b5cf6', '#ec4899']}
+          style={styles.loadingGradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+        >
+          <Animated.View
+            style={[
+              styles.loadingContent,
+              {
+                opacity: loadingOpacity,
+                transform: [{ scale: loadingScale }],
+              },
+            ]}
+          >
+            <Animated.View
+              style={[
+                styles.loadingIconContainer,
+                { transform: [{ rotate: logoSpin }] },
+              ]}
+            >
+              <Text style={styles.loadingIcon}>🔐</Text>
+            </Animated.View>
+            <Text style={styles.loadingTitle}>PassGen Pro</Text>
+            <Text style={styles.loadingSubtitle}>Your Password Security Solution</Text>
+            <View style={styles.loadingDotsContainer}>
+              <Text style={styles.loadingDots}>• • •</Text>
+            </View>
+          </Animated.View>
+          
+          {/* Footer */}
+          <Animated.View style={[styles.loadingFooter, { opacity: loadingOpacity }]}>
+            <Text style={[styles.footerText, { color: '#fff', opacity: 0.9 }]}>
+              Powered by Dynamic.IO
+            </Text>
+          </Animated.View>
+        </LinearGradient>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -706,7 +810,16 @@ export default function App() {
           </Text>
         </View>
 
-        <View style={{ height: 40 }} />
+        <View style={{ height: 20 }} />
+
+        {/* Footer */}
+        <View style={styles.footer}>
+          <Text style={[styles.footerText, { color: theme.textSecondary }]}>
+            Powered by Dynamic.IO
+          </Text>
+        </View>
+
+        <View style={{ height: 20 }} />
       </ScrollView>
     </View>
   );
@@ -1072,5 +1185,62 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginVertical: 4,
     lineHeight: 20,
+  },
+  loadingContainer: {
+    flex: 1,
+  },
+  loadingGradient: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingContent: {
+    alignItems: 'center',
+  },
+  loadingIconContainer: {
+    marginBottom: 30,
+  },
+  loadingIcon: {
+    fontSize: 100,
+  },
+  loadingTitle: {
+    fontSize: 42,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 12,
+    textShadowColor: 'rgba(0, 0, 0, 0.3)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
+  },
+  loadingSubtitle: {
+    fontSize: 16,
+    color: '#fff',
+    opacity: 0.9,
+    marginBottom: 30,
+    textAlign: 'center',
+    paddingHorizontal: 40,
+  },
+  loadingDotsContainer: {
+    marginTop: 20,
+  },
+  loadingDots: {
+    fontSize: 24,
+    color: '#fff',
+    letterSpacing: 8,
+  },
+  loadingFooter: {
+    position: 'absolute',
+    bottom: 40,
+    alignItems: 'center',
+  },
+  footer: {
+    alignItems: 'center',
+    paddingVertical: 20,
+    marginTop: 10,
+  },
+  footerText: {
+    fontSize: 12,
+    opacity: 0.6,
+    letterSpacing: 0.5,
   },
 });
