@@ -10,11 +10,17 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#7B5CE5"
+      "backgroundColor": "#7B5CE5",
+      "icon": "./assets/icon.png"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.passgen.pro"
+      "buildNumber": 2,
+      "bundleIdentifier": "com.passgen.pro",
+      "icon": "./assets/icon.png",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -25,6 +31,11 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "4e321633-c5f6-4175-8b65-028c4d03f1c6"
+      }
     }
   }
 }
