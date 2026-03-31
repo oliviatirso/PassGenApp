@@ -14,7 +14,10 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.passgen.pro"
+      "bundleIdentifier": "com.passgen.pro",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "PassGen Pro uses Face ID to protect your saved passwords in the vault."
+      }
     },
     "android": {
       "adaptiveIcon": {
