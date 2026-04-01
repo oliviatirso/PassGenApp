@@ -15,12 +15,11 @@
     },
     "ios": {
       "supportsTablet": true,
-      "buildNumber": 2,
+      "buildNumber": 11,
       "bundleIdentifier": "com.passgen.pro",
       "icon": "./assets/icon.png",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
-      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "NSFaceIDUsageDescription": "PassGen Pro uses Face ID to protect your saved passwords in the vault."
       }
     },
