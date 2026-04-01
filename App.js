@@ -54,6 +54,8 @@ export default function App() {
   const loadingOpacity = useRef(new Animated.Value(0)).current;
   const loadingScale = useRef(new Animated.Value(0.3)).current;
   const logoRotation = useRef(new Animated.Value(0)).current;
+  const appOpacity = useRef(new Animated.Value(0)).current;
+  const appSlide = useRef(new Animated.Value(40)).current;
 
   // Load dark mode preference and vault
   useEffect(() => {
@@ -456,17 +458,30 @@ export default function App() {
       })
     ).start();
 
-    // Hide loading screen after 5 seconds
+    // Hide loading screen after 5 seconds with crossfade into home screen
     const timer = setTimeout(() => {
       Animated.parallel([
+        // Loading screen exits
         Animated.timing(loadingOpacity, {
           toValue: 0,
-          duration: 500,
+          duration: 600,
           useNativeDriver: true,
         }),
         Animated.timing(loadingScale, {
-          toValue: 0.8,
-          duration: 500,
+          toValue: 1.1,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+        // Home screen enters simultaneously
+        Animated.timing(appOpacity, {
+          toValue: 1,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+        Animated.spring(appSlide, {
+          toValue: 0,
+          tension: 60,
+          friction: 10,
           useNativeDriver: true,
         }),
       ]).start(() => {
@@ -525,53 +540,68 @@ export default function App() {
     outputRange: ['0deg', '360deg'],
   });
 
-  // Loading Screen
-  if (isLoading) {
-    return (
-      <View style={[styles.loadingContainer, { backgroundColor: darkMode ? '#0a0a0a' : '#f5f5f7' }]}>
-        <StatusBar style={darkMode ? 'light' : 'dark'} />
-        <LinearGradient
-          colors={['#6366f1', '#8b5cf6', '#ec4899']}
-          style={styles.loadingGradient}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-        >
-          <Animated.View
-            style={[
-              styles.loadingContent,
-              {
-                opacity: loadingOpacity,
-                transform: [{ scale: loadingScale }],
-              },
-            ]}
+  return (
+    <View style={{ flex: 1 }}>
+    {/* Loading Screen overlay — sits on top until crossfade completes */}
+    {isLoading && (
+      <Animated.View
+        style={[
+          StyleSheet.absoluteFill,
+          { opacity: loadingOpacity, zIndex: 10 },
+        ]}
+        pointerEvents={isLoading ? 'auto' : 'none'}
+      >
+        <View style={[styles.loadingContainer, { backgroundColor: darkMode ? '#0a0a0a' : '#f5f5f7' }]}>
+          <StatusBar style={darkMode ? 'light' : 'dark'} />
+          <LinearGradient
+            colors={['#6366f1', '#8b5cf6', '#ec4899']}
+            style={styles.loadingGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
           >
             <Animated.View
               style={[
-                styles.loadingIconContainer,
-                { transform: [{ rotate: logoSpin }] },
+                styles.loadingContent,
+                {
+                  opacity: loadingOpacity,
+                  transform: [{ scale: loadingScale }],
+                },
               ]}
             >
-              <Text style={styles.loadingIcon}>🔐</Text>
+              <Animated.View
+                style={[
+                  styles.loadingIconContainer,
+                  { transform: [{ rotate: logoSpin }] },
+                ]}
+              >
+                <Text style={styles.loadingIcon}>🔐</Text>
+              </Animated.View>
+              <Text style={styles.loadingTitle}>PassGen Pro</Text>
+              <Text style={styles.loadingSubtitle}>Your Password Security Solution</Text>
+              <View style={styles.loadingDotsContainer}>
+                <Text style={styles.loadingDots}>• • •</Text>
+              </View>
             </Animated.View>
-            <Text style={styles.loadingTitle}>PassGen Pro</Text>
-            <Text style={styles.loadingSubtitle}>Your Password Security Solution</Text>
-            <View style={styles.loadingDotsContainer}>
-              <Text style={styles.loadingDots}>• • •</Text>
-            </View>
-          </Animated.View>
-          
-          {/* Footer */}
-          <Animated.View style={[styles.loadingFooter, { opacity: loadingOpacity }]}>
-            <Text style={[styles.footerText, { color: '#fff', opacity: 0.9 }]}>
-              Powered by Dynamic.IO
-            </Text>
-          </Animated.View>
-        </LinearGradient>
-      </View>
-    );
-  }
 
-  return (
+            {/* Footer */}
+            <Animated.View style={[styles.loadingFooter, { opacity: loadingOpacity }]}>
+              <Text style={[styles.footerText, { color: '#fff', opacity: 0.9 }]}>
+                Powered by Dynamic.IO
+              </Text>
+            </Animated.View>
+          </LinearGradient>
+        </View>
+      </Animated.View>
+    )}
+
+    {/* Home screen — fades and slides up while loading screen fades out */}
+    <Animated.View
+      style={{
+        flex: 1,
+        opacity: appOpacity,
+        transform: [{ translateY: appSlide }],
+      }}
+    >
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <StatusBar style={darkMode ? 'light' : 'dark'} />
       
@@ -1168,6 +1198,8 @@ export default function App() {
 
         <View style={{ height: 20 }} />
       </ScrollView>
+    </View>
+    </Animated.View>
     </View>
   );
 }
