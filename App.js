@@ -16,6 +16,9 @@ import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
+import * as LocalAuthentication from 'expo-local-authentication';
+import { Ionicons } from '@expo/vector-icons';
 
 const { width } = Dimensions.get('window');
 
@@ -29,11 +32,19 @@ export default function App() {
   const [includeLowercase, setIncludeLowercase] = useState(true);
   const [includeNumbers, setIncludeNumbers] = useState(true);
   const [includeSymbols, setIncludeSymbols] = useState(true);
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(true);
   const [passwordStrength, setPasswordStrength] = useState({ score: 0, label: '', color: '' });
   const [passwordAnalysis, setPasswordAnalysis] = useState(null);
   const [copied, setCopied] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [savedPasswords, setSavedPasswords] = useState([]);
+  const [showVaultForm, setShowVaultForm] = useState(false);
+  const [vaultTitle, setVaultTitle] = useState('');
+  const [vaultUsername, setVaultUsername] = useState('');
+  const [vaultPassword, setVaultPassword] = useState('');
+  const [vaultNotes, setVaultNotes] = useState('');
+  const [vaultRevealedIds, setVaultRevealedIds] = useState(new Set());
+  const [copiedField, setCopiedField] = useState('');
 
   // Animation values
   const scaleAnim = useRef(new Animated.Value(1)).current;
@@ -43,10 +54,13 @@ export default function App() {
   const loadingOpacity = useRef(new Animated.Value(0)).current;
   const loadingScale = useRef(new Animated.Value(0.3)).current;
   const logoRotation = useRef(new Animated.Value(0)).current;
+  const appOpacity = useRef(new Animated.Value(0)).current;
+  const appSlide = useRef(new Animated.Value(40)).current;
 
-  // Load dark mode preference
+  // Load dark mode preference and vault
   useEffect(() => {
     loadDarkMode();
+    loadVault();
   }, []);
 
   const loadDarkMode = async () => {
@@ -64,6 +78,128 @@ export default function App() {
     const newValue = !darkMode;
     setDarkMode(newValue);
     await AsyncStorage.setItem('darkMode', String(newValue));
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  };
+
+  // Vault functions — stored in hardware-backed SecureStore (iOS Keychain / Android Keystore)
+  const loadVault = async () => {
+    try {
+      // One-time migration: move any existing AsyncStorage vault data into SecureStore
+      const legacy = await AsyncStorage.getItem('vault');
+      if (legacy !== null) {
+        const entries = JSON.parse(legacy);
+        const ids = entries.map(e => e.id);
+        await SecureStore.setItemAsync('vault_index', JSON.stringify(ids));
+        await Promise.all(
+          entries.map(e => SecureStore.setItemAsync(`vault_entry_${e.id}`, JSON.stringify(e)))
+        );
+        await AsyncStorage.removeItem('vault');
+      }
+
+      // Load index of entry IDs
+      const indexRaw = await SecureStore.getItemAsync('vault_index');
+      if (!indexRaw) return;
+      const ids = JSON.parse(indexRaw);
+
+      // Load each entry individually from SecureStore
+      const entries = await Promise.all(
+        ids.map(async id => {
+          const raw = await SecureStore.getItemAsync(`vault_entry_${id}`);
+          return raw ? JSON.parse(raw) : null;
+        })
+      );
+      setSavedPasswords(entries.filter(Boolean));
+    } catch (e) {
+      console.log('Error loading vault:', e);
+    }
+  };
+
+  const saveVaultEntry = async () => {
+    if (!vaultPassword.trim()) return;
+    const newEntry = {
+      id: Date.now().toString(),
+      title: vaultTitle.trim(),
+      username: vaultUsername.trim(),
+      password: vaultPassword.trim(),
+      notes: vaultNotes.trim(),
+      createdAt: new Date().toISOString(),
+    };
+    const updated = [newEntry, ...savedPasswords];
+    setSavedPasswords(updated);
+
+    // Store entry and update index in SecureStore
+    await SecureStore.setItemAsync(`vault_entry_${newEntry.id}`, JSON.stringify(newEntry));
+    await SecureStore.setItemAsync('vault_index', JSON.stringify(updated.map(e => e.id)));
+
+    setShowVaultForm(false);
+    setVaultTitle('');
+    setVaultUsername('');
+    setVaultPassword('');
+    setVaultNotes('');
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  const deleteVaultEntry = async (id) => {
+    const updated = savedPasswords.filter(e => e.id !== id);
+    setSavedPasswords(updated);
+
+    // Remove individual entry and update index in SecureStore
+    await SecureStore.deleteItemAsync(`vault_entry_${id}`);
+    await SecureStore.setItemAsync('vault_index', JSON.stringify(updated.map(e => e.id)));
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  };
+
+  const toggleVaultReveal = async (id) => {
+    // If already revealed, hide immediately — no auth needed
+    if (vaultRevealedIds.has(id)) {
+      setVaultRevealedIds(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      return;
+    }
+
+    // Require authentication before revealing
+    const hasHardware = await LocalAuthentication.hasHardwareAsync();
+    const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+
+    if (hasHardware && isEnrolled) {
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Authenticate to reveal password',
+        fallbackLabel: 'Use Passcode',
+        cancelLabel: 'Cancel',
+        disableDeviceFallback: false,
+      });
+      if (!result.success) return;
+    }
+
+    // Auth passed (or device has no biometrics set up)
+    setVaultRevealedIds(prev => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  const copyVaultField = async (text, fieldName) => {
+    await Clipboard.setStringAsync(text);
+    setCopiedField(fieldName);
+    setTimeout(() => setCopiedField(''), 2000);
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  const saveCurrentToVault = () => {
+    if (!password) return;
+    setVaultPassword(password);
+    setVaultTitle('');
+    setVaultUsername('');
+    setVaultNotes('');
+    setShowVaultForm(true);
+    setMode('vault');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   };
 
@@ -322,17 +458,30 @@ export default function App() {
       })
     ).start();
 
-    // Hide loading screen after 5 seconds
+    // Hide loading screen after 5 seconds with crossfade into home screen
     const timer = setTimeout(() => {
       Animated.parallel([
+        // Loading screen exits
         Animated.timing(loadingOpacity, {
           toValue: 0,
-          duration: 500,
+          duration: 600,
           useNativeDriver: true,
         }),
         Animated.timing(loadingScale, {
-          toValue: 0.8,
-          duration: 500,
+          toValue: 1.1,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+        // Home screen enters simultaneously
+        Animated.timing(appOpacity, {
+          toValue: 1,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+        Animated.spring(appSlide, {
+          toValue: 0,
+          tension: 60,
+          friction: 10,
           useNativeDriver: true,
         }),
       ]).start(() => {
@@ -367,11 +516,12 @@ export default function App() {
   // Switch mode
   const switchMode = (newMode) => {
     setMode(newMode);
+    if (newMode !== 'vault') setShowVaultForm(false);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     if (newMode === 'generate') {
       setPasswordAnalysis(null);
       analyzePassword(password);
-    } else {
+    } else if (newMode === 'test') {
       if (testPassword) {
         analyzePasswordComprehensive(testPassword);
       }
@@ -390,53 +540,68 @@ export default function App() {
     outputRange: ['0deg', '360deg'],
   });
 
-  // Loading Screen
-  if (isLoading) {
-    return (
-      <View style={[styles.loadingContainer, { backgroundColor: darkMode ? '#0a0a0a' : '#f5f5f7' }]}>
-        <StatusBar style={darkMode ? 'light' : 'dark'} />
-        <LinearGradient
-          colors={['#6366f1', '#8b5cf6', '#ec4899']}
-          style={styles.loadingGradient}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-        >
-          <Animated.View
-            style={[
-              styles.loadingContent,
-              {
-                opacity: loadingOpacity,
-                transform: [{ scale: loadingScale }],
-              },
-            ]}
+  return (
+    <View style={{ flex: 1 }}>
+    {/* Loading Screen overlay — sits on top until crossfade completes */}
+    {isLoading && (
+      <Animated.View
+        style={[
+          StyleSheet.absoluteFill,
+          { opacity: loadingOpacity, zIndex: 10 },
+        ]}
+        pointerEvents={isLoading ? 'auto' : 'none'}
+      >
+        <View style={[styles.loadingContainer, { backgroundColor: darkMode ? '#0a0a0a' : '#f5f5f7' }]}>
+          <StatusBar style={darkMode ? 'light' : 'dark'} />
+          <LinearGradient
+            colors={['#6366f1', '#8b5cf6', '#ec4899']}
+            style={styles.loadingGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
           >
             <Animated.View
               style={[
-                styles.loadingIconContainer,
-                { transform: [{ rotate: logoSpin }] },
+                styles.loadingContent,
+                {
+                  opacity: loadingOpacity,
+                  transform: [{ scale: loadingScale }],
+                },
               ]}
             >
-              <Text style={styles.loadingIcon}>🔐</Text>
+              <Animated.View
+                style={[
+                  styles.loadingIconContainer,
+                  { transform: [{ rotate: logoSpin }] },
+                ]}
+              >
+                <Text style={styles.loadingIcon}>🔐</Text>
+              </Animated.View>
+              <Text style={styles.loadingTitle}>PassGen Pro</Text>
+              <Text style={styles.loadingSubtitle}>Your Password Security Solution</Text>
+              <View style={styles.loadingDotsContainer}>
+                <Text style={styles.loadingDots}>• • •</Text>
+              </View>
             </Animated.View>
-            <Text style={styles.loadingTitle}>PassGen Pro</Text>
-            <Text style={styles.loadingSubtitle}>Your Password Security Solution</Text>
-            <View style={styles.loadingDotsContainer}>
-              <Text style={styles.loadingDots}>• • •</Text>
-            </View>
-          </Animated.View>
-          
-          {/* Footer */}
-          <Animated.View style={[styles.loadingFooter, { opacity: loadingOpacity }]}>
-            <Text style={[styles.footerText, { color: '#fff', opacity: 0.9 }]}>
-              Powered by Dynamic.IO
-            </Text>
-          </Animated.View>
-        </LinearGradient>
-      </View>
-    );
-  }
 
-  return (
+            {/* Footer */}
+            <Animated.View style={[styles.loadingFooter, { opacity: loadingOpacity }]}>
+              <Text style={[styles.footerText, { color: '#fff', opacity: 0.9 }]}>
+                Powered by Dynamic.IO
+              </Text>
+            </Animated.View>
+          </LinearGradient>
+        </View>
+      </Animated.View>
+    )}
+
+    {/* Home screen — fades and slides up while loading screen fades out */}
+    <Animated.View
+      style={{
+        flex: 1,
+        opacity: appOpacity,
+        transform: [{ translateY: appSlide }],
+      }}
+    >
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <StatusBar style={darkMode ? 'light' : 'dark'} />
       
@@ -448,7 +613,7 @@ export default function App() {
         <View style={styles.headerContent}>
           <Text style={styles.headerTitle}>🔐 PassGen Pro</Text>
           <TouchableOpacity onPress={toggleDarkMode} style={styles.darkModeToggle}>
-            <Text style={styles.darkModeIcon}>{darkMode ? '☀️' : '🌙'}</Text>
+            <Ionicons name={darkMode ? 'sunny-outline' : 'moon-outline'} size={24} color="#fff" />
           </TouchableOpacity>
         </View>
       </LinearGradient>
@@ -464,13 +629,13 @@ export default function App() {
             ]}
             onPress={() => switchMode('generate')}
           >
-            <Text
-              style={[
-                styles.modeButtonText,
-                { color: mode === 'generate' ? '#fff' : theme.textSecondary },
-              ]}
-            >
-              ⚡ Generate
+            <Ionicons
+              name="flash-outline"
+              size={15}
+              color={mode === 'generate' ? '#fff' : theme.textSecondary}
+            />
+            <Text style={[styles.modeButtonText, { color: mode === 'generate' ? '#fff' : theme.textSecondary }]}>
+              Generate
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -481,18 +646,35 @@ export default function App() {
             ]}
             onPress={() => switchMode('test')}
           >
-            <Text
-              style={[
-                styles.modeButtonText,
-                { color: mode === 'test' ? '#fff' : theme.textSecondary },
-              ]}
-            >
-              🔍 Test Password
+            <Ionicons
+              name="search-outline"
+              size={15}
+              color={mode === 'test' ? '#fff' : theme.textSecondary}
+            />
+            <Text style={[styles.modeButtonText, { color: mode === 'test' ? '#fff' : theme.textSecondary }]}>
+              Test
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.modeButton,
+              mode === 'vault' && styles.modeButtonActive,
+              mode === 'vault' && { backgroundColor: darkMode ? '#6366f1' : '#8b5cf6' },
+            ]}
+            onPress={() => switchMode('vault')}
+          >
+            <Ionicons
+              name="lock-closed-outline"
+              size={15}
+              color={mode === 'vault' ? '#fff' : theme.textSecondary}
+            />
+            <Text style={[styles.modeButtonText, { color: mode === 'vault' ? '#fff' : theme.textSecondary }]}>
+              Vault
             </Text>
           </TouchableOpacity>
         </View>
 
-        {mode === 'generate' ? (
+        {mode === 'generate' && (
           <>
             {/* Password Display */}
             <Animated.View 
@@ -506,14 +688,28 @@ export default function App() {
                 <Text style={[styles.passwordLabel, { color: theme.textSecondary }]}>
                   Your Password
                 </Text>
-                <TouchableOpacity 
-                  onPress={copyToClipboard} 
-                  style={[styles.copyButton, { backgroundColor: darkMode ? '#6366f1' : '#8b5cf6' }]}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.copyButtonIcon}>📋</Text>
-                  <Text style={styles.copyButtonText}>Copy</Text>
-                </TouchableOpacity>
+                <View style={styles.passwordActions}>
+                  <TouchableOpacity
+                    onPress={saveCurrentToVault}
+                    style={[styles.saveButton, { backgroundColor: theme.buttonBg }]}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="bookmark-outline" size={14} color={theme.textPrimary} />
+                    <Text style={[styles.copyButtonText, { color: theme.textPrimary }]}>Save</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    onPress={copyToClipboard} 
+                    style={[styles.copyButton, { backgroundColor: darkMode ? '#6366f1' : '#8b5cf6' }]}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={copied ? 'checkmark' : 'clipboard-outline'}
+                      size={14}
+                      color="#fff"
+                    />
+                    <Text style={styles.copyButtonText}>{copied ? 'Copied!' : 'Copy'}</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
               <TouchableOpacity onPress={copyToClipboard} activeOpacity={0.7}>
                 <Text style={[styles.password, { color: theme.textPrimary }]} numberOfLines={3}>
@@ -537,7 +733,9 @@ export default function App() {
               )}
             </Animated.View>
           </>
-        ) : (
+        )}
+
+        {mode === 'test' && (
           <>
             {/* Test Password Input */}
             <View style={[styles.passwordContainer, { backgroundColor: theme.cardBg }]}>
@@ -563,10 +761,189 @@ export default function App() {
                   style={styles.eyeButton}
                   activeOpacity={0.6}
                 >
-                  <Text style={styles.eyeIcon}>{showPassword ? '👁️' : '👁️‍🗨️'}</Text>
+                  <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={22} color={theme.textSecondary} />
                 </TouchableOpacity>
               </View>
             </View>
+          </>
+        )}
+
+        {mode === 'vault' && (
+          <>
+            {/* Add New Button */}
+            {!showVaultForm && (
+              <TouchableOpacity
+                style={[styles.addVaultButton, { backgroundColor: darkMode ? '#6366f1' : '#8b5cf6' }]}
+                onPress={() => {
+                  setVaultTitle('');
+                  setVaultUsername('');
+                  setVaultPassword('');
+                  setVaultNotes('');
+                  setShowVaultForm(true);
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.addVaultButtonText}>+ Add New Entry</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Add / Edit Form */}
+            {showVaultForm && (
+              <View style={[styles.vaultForm, { backgroundColor: theme.cardBg }]}>
+                <Text style={[styles.vaultFormTitle, { color: theme.textPrimary }]}>New Entry</Text>
+
+                <Text style={[styles.vaultFieldLabel, { color: theme.textSecondary }]}>Label / Site Name</Text>
+                <TextInput
+                  style={[styles.vaultInput, { color: theme.textPrimary, borderColor: theme.strengthBarBg }]}
+                  value={vaultTitle}
+                  onChangeText={setVaultTitle}
+                  placeholder="e.g. Gmail, Netflix..."
+                  placeholderTextColor={theme.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+
+                <Text style={[styles.vaultFieldLabel, { color: theme.textSecondary }]}>Username / Email</Text>
+                <TextInput
+                  style={[styles.vaultInput, { color: theme.textPrimary, borderColor: theme.strengthBarBg }]}
+                  value={vaultUsername}
+                  onChangeText={setVaultUsername}
+                  placeholder="username or email"
+                  placeholderTextColor={theme.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                />
+
+                <Text style={[styles.vaultFieldLabel, { color: theme.textSecondary }]}>Password</Text>
+                <TextInput
+                  style={[styles.vaultInput, { color: theme.textPrimary, borderColor: theme.strengthBarBg, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }]}
+                  value={vaultPassword}
+                  onChangeText={setVaultPassword}
+                  placeholder="password"
+                  placeholderTextColor={theme.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+
+                <Text style={[styles.vaultFieldLabel, { color: theme.textSecondary }]}>Notes (optional)</Text>
+                <TextInput
+                  style={[styles.vaultInput, styles.vaultNotesInput, { color: theme.textPrimary, borderColor: theme.strengthBarBg }]}
+                  value={vaultNotes}
+                  onChangeText={setVaultNotes}
+                  placeholder="Any notes..."
+                  placeholderTextColor={theme.textSecondary}
+                  multiline
+                  numberOfLines={3}
+                  autoCorrect={false}
+                />
+
+                <View style={styles.vaultFormButtons}>
+                  <TouchableOpacity
+                    style={[styles.vaultFormBtn, { backgroundColor: theme.buttonBg }]}
+                    onPress={() => setShowVaultForm(false)}
+                  >
+                    <Text style={[styles.vaultFormBtnText, { color: theme.textPrimary }]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.vaultFormBtn, { backgroundColor: darkMode ? '#6366f1' : '#8b5cf6' }]}
+                    onPress={saveVaultEntry}
+                  >
+                    <Text style={[styles.vaultFormBtnText, { color: '#fff' }]}>Save Entry</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {/* Empty State */}
+            {savedPasswords.length === 0 && !showVaultForm && (
+              <View style={styles.vaultEmptyState}>
+                <Text style={[styles.vaultEmptyTitle, { color: theme.textPrimary }]}>No Saved Passwords</Text>
+                <Text style={[styles.vaultEmptySubtitle, { color: theme.textSecondary }]}>
+                  Tap "Add New Entry" above, or use the{' '}
+                  <Ionicons name="bookmark-outline" size={13} color={theme.textSecondary} />{' '}
+                  Save button on a generated password
+                </Text>
+              </View>
+            )}
+
+            {/* Saved Entries List */}
+            {savedPasswords.map((entry) => (
+              <View key={entry.id} style={[styles.vaultEntry, { backgroundColor: theme.cardBg }]}>
+                {/* Entry Header */}
+                <View style={styles.vaultEntryHeader}>
+                  <Text style={[styles.vaultEntryTitle, { color: theme.textPrimary }]}>
+                    {entry.title || 'Untitled'}
+                  </Text>
+                  <TouchableOpacity onPress={() => deleteVaultEntry(entry.id)} style={styles.vaultDeleteBtn}>
+                    <Ionicons name="trash-outline" size={20} color="#FF4444" />
+                  </TouchableOpacity>
+                </View>
+
+                {/* Username Row */}
+                <View style={[styles.vaultEntryRow, { borderTopColor: theme.strengthBarBg }]}>
+                  <View style={styles.vaultEntryField}>
+                    <Text style={[styles.vaultEntryLabel, { color: theme.textSecondary }]}>USERNAME</Text>
+                    <Text style={[styles.vaultEntryValue, { color: theme.textPrimary }]}>
+                      {entry.username || '—'}
+                    </Text>
+                  </View>
+                  {entry.username ? (
+                    <TouchableOpacity
+                      onPress={() => copyVaultField(entry.username, `${entry.id}-user`)}
+                      style={[styles.vaultCopyBtn, { backgroundColor: theme.buttonBg }]}
+                    >
+                      <Ionicons
+                        name={copiedField === `${entry.id}-user` ? 'checkmark' : 'clipboard-outline'}
+                        size={18}
+                        color={copiedField === `${entry.id}-user` ? '#52B788' : theme.textSecondary}
+                      />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+
+                {/* Password Row */}
+                <View style={[styles.vaultEntryRow, { borderTopColor: theme.strengthBarBg }]}>
+                  <View style={styles.vaultEntryField}>
+                    <Text style={[styles.vaultEntryLabel, { color: theme.textSecondary }]}>PASSWORD</Text>
+                    <Text style={[styles.vaultEntryValue, { color: theme.textPrimary, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }]}>
+                      {vaultRevealedIds.has(entry.id) ? entry.password : '••••••••••••'}
+                    </Text>
+                  </View>
+                  <View style={styles.vaultEntryActions}>
+                    <TouchableOpacity
+                      onPress={() => toggleVaultReveal(entry.id)}
+                      style={[styles.vaultCopyBtn, { backgroundColor: theme.buttonBg }]}
+                    >
+                      <Ionicons
+                        name={vaultRevealedIds.has(entry.id) ? 'eye-off-outline' : 'eye-outline'}
+                        size={18}
+                        color={theme.textSecondary}
+                      />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => copyVaultField(entry.password, `${entry.id}-pass`)}
+                      style={[styles.vaultCopyBtn, { backgroundColor: theme.buttonBg }]}
+                    >
+                      <Ionicons
+                        name={copiedField === `${entry.id}-pass` ? 'checkmark' : 'clipboard-outline'}
+                        size={18}
+                        color={copiedField === `${entry.id}-pass` ? '#52B788' : theme.textSecondary}
+                      />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* Notes Row */}
+                {entry.notes ? (
+                  <View style={[styles.vaultNotesRow, { borderTopColor: theme.strengthBarBg }]}>
+                    <Text style={[styles.vaultEntryLabel, { color: theme.textSecondary }]}>NOTES</Text>
+                    <Text style={[styles.vaultNotesText, { color: theme.textPrimary }]}>{entry.notes}</Text>
+                  </View>
+                ) : null}
+              </View>
+            ))}
           </>
         )}
 
@@ -726,6 +1103,27 @@ export default function App() {
           </View>
         )}
 
+        {/* Generate Button - Only in Generate Mode */}
+        {mode === 'generate' && (
+          <TouchableOpacity
+          onPress={generatePassword}
+          activeOpacity={0.8}
+          style={styles.generateButtonContainer}
+        >
+          <LinearGradient
+            colors={darkMode ? ['#6366f1', '#8b5cf6'] : ['#8b5cf6', '#ec4899']}
+            style={styles.generateButton}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+          >
+            <Animated.View style={{ transform: [{ rotate: rotation }] }}>
+              <Ionicons name="refresh-outline" size={22} color="#fff" />
+            </Animated.View>
+            <Text style={styles.generateButtonText}>Generate New Password</Text>
+          </LinearGradient>
+          </TouchableOpacity>
+        )}
+
         {/* Options - Only in Generate Mode */}
         {mode === 'generate' && (
           <View style={[styles.card, { backgroundColor: theme.cardBg }]}>
@@ -775,27 +1173,6 @@ export default function App() {
           </View>
         )}
 
-        {/* Generate Button - Only in Generate Mode */}
-        {mode === 'generate' && (
-          <TouchableOpacity
-          onPress={generatePassword}
-          activeOpacity={0.8}
-          style={styles.generateButtonContainer}
-        >
-          <LinearGradient
-            colors={darkMode ? ['#6366f1', '#8b5cf6'] : ['#8b5cf6', '#ec4899']}
-            style={styles.generateButton}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-          >
-            <Animated.Text style={[styles.generateButtonIcon, { transform: [{ rotate: rotation }] }]}>
-              🔄
-            </Animated.Text>
-            <Text style={styles.generateButtonText}>Generate New Password</Text>
-          </LinearGradient>
-          </TouchableOpacity>
-        )}
-
         {/* Info Card */}
         <View style={[styles.infoCard, { backgroundColor: theme.infoBg }]}>
           <Text style={[styles.infoTitle, { color: theme.textPrimary }]}>
@@ -821,6 +1198,8 @@ export default function App() {
 
         <View style={{ height: 20 }} />
       </ScrollView>
+    </View>
+    </Animated.View>
     </View>
   );
 }
@@ -880,9 +1259,6 @@ const styles = StyleSheet.create({
   darkModeToggle: {
     padding: 8,
   },
-  darkModeIcon: {
-    fontSize: 24,
-  },
   scrollView: {
     flex: 1,
     paddingHorizontal: 20,
@@ -923,9 +1299,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 4,
     elevation: 3,
-  },
-  copyButtonIcon: {
-    fontSize: 14,
   },
   copyButtonText: {
     color: '#fff',
@@ -1055,9 +1428,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
     gap: 12,
   },
-  generateButtonIcon: {
-    fontSize: 24,
-  },
   generateButtonText: {
     color: '#fff',
     fontSize: 18,
@@ -1090,10 +1460,13 @@ const styles = StyleSheet.create({
   },
   modeButton: {
     flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    flexDirection: 'row',
+    paddingVertical: 11,
+    paddingHorizontal: 6,
     borderRadius: 12,
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
   },
   modeButtonActive: {
     shadowColor: '#8b5cf6',
@@ -1103,7 +1476,7 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   modeButtonText: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: 'bold',
   },
   passwordInputContainer: {
@@ -1121,9 +1494,6 @@ const styles = StyleSheet.create({
     padding: 8,
     position: 'absolute',
     right: 0,
-  },
-  eyeIcon: {
-    fontSize: 24,
   },
   analysisContainer: {
     marginTop: 16,
@@ -1242,5 +1612,159 @@ const styles = StyleSheet.create({
     fontSize: 12,
     opacity: 0.6,
     letterSpacing: 0.5,
+  },
+  passwordActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  saveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 4,
+  },
+  addVaultButton: {
+    marginTop: 20,
+    padding: 16,
+    borderRadius: 16,
+    alignItems: 'center',
+    shadowColor: '#8b5cf6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  addVaultButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  vaultForm: {
+    marginTop: 20,
+    padding: 20,
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  vaultFormTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  vaultFieldLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: 14,
+    marginBottom: 6,
+  },
+  vaultInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 15,
+  },
+  vaultNotesInput: {
+    height: 80,
+    textAlignVertical: 'top',
+  },
+  vaultFormButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 20,
+  },
+  vaultFormBtn: {
+    flex: 1,
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  vaultFormBtnText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  vaultEmptyState: {
+    alignItems: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 20,
+  },
+  vaultEmptyTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  vaultEmptySubtitle: {
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  vaultEntry: {
+    marginTop: 16,
+    padding: 16,
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  vaultEntryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  vaultEntryTitle: {
+    fontSize: 17,
+    fontWeight: 'bold',
+    flex: 1,
+  },
+  vaultDeleteBtn: {
+    padding: 6,
+  },
+  vaultEntryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderTopWidth: 1,
+  },
+  vaultEntryField: {
+    flex: 1,
+  },
+  vaultEntryLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    marginBottom: 3,
+    textTransform: 'uppercase',
+  },
+  vaultEntryValue: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  vaultEntryActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  vaultCopyBtn: {
+    padding: 8,
+    borderRadius: 8,
+  },
+  vaultNotesRow: {
+    paddingTop: 10,
+    borderTopWidth: 1,
+    marginTop: 2,
+  },
+  vaultNotesText: {
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 4,
   },
 });
