@@ -15,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "buildNumber": 11,
+      "buildNumber": "11",
       "bundleIdentifier": "com.passgen.pro",
       "icon": "./assets/icon.png",
       "infoPlist": {
